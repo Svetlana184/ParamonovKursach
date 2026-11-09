@@ -1,0 +1,420 @@
+-- ============================================================
+-- Полный скрипт создания БД PostgreSQL
+-- Система управления проектами
+-- ============================================================
+
+-- Создание базы данных (выполнить отдельно, если нужно)
+-- CREATE DATABASE project_management_db;
+
+-- ============================================================
+-- 1. КОМПАНИЯ
+-- ============================================================
+CREATE TABLE company (
+    id_company      SERIAL PRIMARY KEY,
+    name            VARCHAR(255) NOT NULL
+);
+
+-- ============================================================
+-- 2. КОМАНДА
+-- ============================================================
+CREATE TABLE team (
+    id_team         SERIAL PRIMARY KEY,
+    name            VARCHAR(255) NOT NULL,
+    description     TEXT,
+    id_company      INTEGER NOT NULL,
+    CONSTRAINT fk_team_company
+        FOREIGN KEY (id_company) REFERENCES company(id_company)
+        ON DELETE CASCADE
+);
+
+-- ============================================================
+-- 3. ПОЛЬЗОВАТЕЛИ
+-- ============================================================
+CREATE TYPE user_role AS ENUM ('customer', 'manager', 'developer');
+
+CREATE TABLE users (
+    id_user         SERIAL PRIMARY KEY,
+    first_name      VARCHAR(100) NOT NULL,
+    last_name       VARCHAR(100) NOT NULL,
+    role            user_role NOT NULL,
+    login           VARCHAR(100) NOT NULL UNIQUE,
+    password_hash   VARCHAR(255) NOT NULL,
+    id_team         INTEGER,
+    id_company      INTEGER,
+    short_description TEXT,
+    CONSTRAINT fk_users_team
+        FOREIGN KEY (id_team) REFERENCES team(id_team)
+        ON DELETE SET NULL,
+    CONSTRAINT fk_users_company
+        FOREIGN KEY (id_company) REFERENCES company(id_company)
+        ON DELETE SET NULL
+);
+
+-- ============================================================
+-- 4. ПРОЕКТ
+-- ============================================================
+CREATE TYPE project_status AS ENUM (
+    'draft',
+    'in_progress',
+    'pending_approval',
+    'completed',
+    'closed',
+    'frozen'
+);
+
+CREATE TABLE project (
+    id_project      SERIAL PRIMARY KEY,
+    id_customer     INTEGER NOT NULL,
+    id_team         INTEGER,
+    name            VARCHAR(255) NOT NULL,
+    status          project_status NOT NULL DEFAULT 'draft',
+    description     TEXT,
+    CONSTRAINT fk_project_customer
+        FOREIGN KEY (id_customer) REFERENCES users(id_user)
+        ON DELETE RESTRICT,
+    CONSTRAINT fk_project_team
+        FOREIGN KEY (id_team) REFERENCES team(id_team)
+        ON DELETE SET NULL
+);
+
+-- ============================================================
+-- 5. ТЕХНИЧЕСКОЕ ЗАДАНИЕ
+-- ============================================================
+CREATE TABLE technical_specification (
+    id_spec         SERIAL PRIMARY KEY,
+    id_project      INTEGER NOT NULL,
+    name            VARCHAR(255) NOT NULL,
+    deadline        DATE,
+    description     TEXT,
+    CONSTRAINT fk_spec_project
+        FOREIGN KEY (id_project) REFERENCES project(id_project)
+        ON DELETE CASCADE
+);
+
+-- ============================================================
+-- 6. ПУНКТЫ ТЗ
+-- ============================================================
+CREATE TABLE specification_item (
+    id_item         SERIAL PRIMARY KEY,
+    id_spec         INTEGER NOT NULL,
+    name            VARCHAR(255) NOT NULL,
+    description     TEXT,
+    CONSTRAINT fk_item_spec
+        FOREIGN KEY (id_spec) REFERENCES technical_specification(id_spec)
+        ON DELETE CASCADE
+);
+
+-- ============================================================
+-- 7. СЧЁТ
+-- ============================================================
+CREATE TABLE invoice (
+    id_invoice      SERIAL PRIMARY KEY,
+    name            VARCHAR(255) NOT NULL,
+    cost            NUMERIC(15, 2) NOT NULL CHECK (cost >= 0),
+    start_date      DATE,
+    end_date        DATE,
+    CONSTRAINT chk_invoice_dates CHECK (end_date IS NULL OR end_date >= start_date)
+);
+
+-- ============================================================
+-- 8. СПИСОК ЗАДАЧ
+-- ============================================================
+CREATE TABLE task_list (
+    id_task_list    SERIAL PRIMARY KEY,
+    id_invoice      INTEGER NOT NULL,
+    name            VARCHAR(255) NOT NULL,
+    completion_percent NUMERIC(5, 2) NOT NULL DEFAULT 0
+        CHECK (completion_percent >= 0 AND completion_percent <= 100),
+    CONSTRAINT fk_task_list_invoice
+        FOREIGN KEY (id_invoice) REFERENCES invoice(id_invoice)
+        ON DELETE CASCADE
+);
+
+-- ============================================================
+-- 9. ЗАДАЧА
+-- ============================================================
+CREATE TYPE task_status AS ENUM (
+    'new',
+    'in_progress',
+    'on_review',
+    'done',
+    'cancelled'
+);
+
+CREATE TABLE task (
+    id_task         SERIAL PRIMARY KEY,
+    id_task_list    INTEGER NOT NULL,
+    description     TEXT,
+    status          task_status NOT NULL DEFAULT 'new',
+    planned_hours   NUMERIC(7, 2) CHECK (planned_hours >= 0),
+    actual_hours    NUMERIC(7, 2) CHECK (actual_hours >= 0),
+    cost            NUMERIC(15, 2) CHECK (cost >= 0),
+    id_developer    INTEGER,
+    CONSTRAINT fk_task_task_list
+        FOREIGN KEY (id_task_list) REFERENCES task_list(id_task_list)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_task_developer
+        FOREIGN KEY (id_developer) REFERENCES users(id_user)
+        ON DELETE SET NULL
+);
+
+-- ============================================================
+-- 10. ИЗМЕНЕНИЯ ДЛЯ ПОДТВЕРЖДЕНИЯ
+-- ============================================================
+CREATE TYPE change_status AS ENUM ('created', 'approved', 'revoked');
+
+CREATE TABLE change_request (
+    id_change        SERIAL PRIMARY KEY,
+    id_spec_item     INTEGER NOT NULL,
+    id_task          INTEGER,
+    id_invoice       INTEGER,
+    name             VARCHAR(255) NOT NULL,
+    description      TEXT,
+    created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    status           change_status NOT NULL DEFAULT 'created',
+    id_creator       INTEGER NOT NULL,
+    id_approver      INTEGER,
+
+    CONSTRAINT fk_change_spec_item
+        FOREIGN KEY (id_spec_item) REFERENCES specification_item(id_item)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_change_task
+        FOREIGN KEY (id_task) REFERENCES task(id_task)
+        ON DELETE SET NULL,
+    CONSTRAINT fk_change_invoice
+        FOREIGN KEY (id_invoice) REFERENCES invoice(id_invoice)
+        ON DELETE SET NULL,
+    CONSTRAINT fk_change_creator
+        FOREIGN KEY (id_creator) REFERENCES users(id_user)
+        ON DELETE RESTRICT,
+    CONSTRAINT fk_change_approver
+        FOREIGN KEY (id_approver) REFERENCES users(id_user)
+        ON DELETE SET NULL,
+
+    CONSTRAINT chk_change_target
+        CHECK (id_task IS NOT NULL OR id_invoice IS NOT NULL),
+    CONSTRAINT chk_change_approved
+        CHECK (status <> 'approved' OR id_approver IS NOT NULL)
+);
+
+-- ============================================================
+-- ИНДЕКСЫ
+-- ============================================================
+CREATE INDEX idx_users_team           ON users(id_team);
+CREATE INDEX idx_users_company        ON users(id_company);
+CREATE INDEX idx_team_company         ON team(id_company);
+CREATE INDEX idx_project_customer     ON project(id_customer);
+CREATE INDEX idx_project_team         ON project(id_team);
+CREATE INDEX idx_spec_project         ON technical_specification(id_project);
+CREATE INDEX idx_item_spec            ON specification_item(id_spec);
+CREATE INDEX idx_task_list_invoice    ON task_list(id_invoice);
+CREATE INDEX idx_task_task_list       ON task(id_task_list);
+CREATE INDEX idx_task_developer       ON task(id_developer);
+CREATE INDEX idx_change_spec_item     ON change_request(id_spec_item);
+CREATE INDEX idx_change_task          ON change_request(id_task);
+CREATE INDEX idx_change_invoice       ON change_request(id_invoice);
+CREATE INDEX idx_change_creator       ON change_request(id_creator);
+CREATE INDEX idx_change_approver      ON change_request(id_approver);
+CREATE INDEX idx_change_status        ON change_request(status);
+
+-- ============================================================
+-- АВТООБНОВЛЕНИЕ completion_percent В task_list
+-- ============================================================
+
+-- Вспомогательная функция пересчёта конкретного списка задач
+CREATE OR REPLACE FUNCTION fn_recalc_task_list_completion_for(p_task_list_id INTEGER)
+RETURNS VOID
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_total_weight  NUMERIC(15, 2);
+    v_done_weight   NUMERIC(15, 2);
+    v_percent       NUMERIC(5, 2);
+BEGIN
+    SELECT COALESCE(SUM(COALESCE(planned_hours, 1)), 0)
+      INTO v_total_weight
+      FROM task
+     WHERE id_task_list = p_task_list_id;
+
+    SELECT COALESCE(SUM(COALESCE(planned_hours, 1)), 0)
+      INTO v_done_weight
+      FROM task
+     WHERE id_task_list = p_task_list_id
+       AND status = 'done';
+
+    IF v_total_weight > 0 THEN
+        v_percent := ROUND((v_done_weight / v_total_weight) * 100, 2);
+    ELSE
+        v_percent := 0;
+    END IF;
+
+    UPDATE task_list
+       SET completion_percent = v_percent
+     WHERE id_task_list = p_task_list_id;
+END;
+$$;
+
+-- Триггерная функция пересчёта при изменении задач
+CREATE OR REPLACE FUNCTION fn_recalc_task_list_completion()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_task_list_id  INTEGER;
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        v_task_list_id := OLD.id_task_list;
+    ELSE
+        v_task_list_id := NEW.id_task_list;
+    END IF;
+
+    PERFORM fn_recalc_task_list_completion_for(v_task_list_id);
+
+    -- Если задача переехала в другой список — обновляем и старый
+    IF TG_OP = 'UPDATE' AND OLD.id_task_list <> NEW.id_task_list THEN
+        PERFORM fn_recalc_task_list_completion_for(OLD.id_task_list);
+    END IF;
+
+    RETURN NULL;
+END;
+$$;
+
+CREATE TRIGGER trg_task_recalc_completion
+AFTER INSERT OR UPDATE OF status, planned_hours, id_task_list
+    OR DELETE
+ON task
+FOR EACH ROW
+EXECUTE FUNCTION fn_recalc_task_list_completion();
+
+-- ============================================================
+-- ТРИГГЕР ЗАЩИТЫ change_request
+-- ============================================================
+CREATE OR REPLACE FUNCTION fn_change_request_guard()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' AND NEW.created_at <> OLD.created_at THEN
+        NEW.created_at := OLD.created_at;
+    END IF;
+
+    IF TG_OP = 'UPDATE'
+       AND OLD.status = 'approved'
+       AND NEW.status <> 'approved' THEN
+        RAISE EXCEPTION 'Нельзя изменить статус одобренного изменения (id=%)', OLD.id_change;
+    END IF;
+
+    IF TG_OP = 'UPDATE'
+       AND NEW.status = 'approved'
+       AND NEW.id_approver IS NULL THEN
+        RAISE EXCEPTION 'Для одобрения изменения (id=%) требуется id_approver', NEW.id_change;
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_change_request_guard
+BEFORE UPDATE ON change_request
+FOR EACH ROW
+EXECUTE FUNCTION fn_change_request_guard();
+
+-- ============================================================
+-- ТЕСТОВЫЕ ДАННЫЕ
+-- ============================================================
+
+-- Компании
+INSERT INTO company (name) VALUES
+    ('ООО Ромашка'),
+    ('ИП Петров'),
+    ('АО ТехноСофт');
+
+-- Команды
+INSERT INTO team (name, description, id_company) VALUES
+    ('Backend Team',  'Разработка серверной части', 1),
+    ('Frontend Team', 'Разработка интерфейсов',     1),
+    ('Mobile Team',   'Мобильная разработка',       3);
+
+-- Пользователи (пароли — заглушки хэшей)
+INSERT INTO users (first_name, last_name, role, login, password_hash, id_team, id_company, short_description) VALUES
+    ('Иван',   'Иванов',   'customer',  'ivanov',    '$2b$12$hash1', NULL, 1, 'Заказчик из Ромашки'),
+    ('Пётр',   'Петров',   'manager',   'petrov',    '$2b$12$hash2', NULL, 1, 'Менеджер проектов'),
+    ('Сергей', 'Сидоров',  'developer', 'sidorov',   '$2b$12$hash3', 1,    1, 'Backend-разработчик'),
+    ('Анна',   'Смирнова', 'developer', 'smirnova',  '$2b$12$hash4', 2,    1, 'Frontend-разработчик'),
+    ('Олег',   'Кузнецов', 'developer', 'kuznetsov', '$2b$12$hash5', 3,    3, 'Мобильный разработчик');
+
+-- Проекты
+INSERT INTO project (id_customer, id_team, name, status, description) VALUES
+    (1, 1, 'CRM-система',         'in_progress',      'Разработка CRM для отдела продаж'),
+    (1, 2, 'Корпоративный сайт',  'draft',            'Новый сайт компании'),
+    (2, 3, 'Мобильное приложение','pending_approval', 'Приложение для доставки');
+
+-- Технические задания
+INSERT INTO technical_specification (id_project, name, deadline, description) VALUES
+    (1, 'ТЗ на CRM',        '2026-06-01', 'Полное ТЗ на CRM-систему'),
+    (2, 'ТЗ на сайт',       '2026-09-01', 'ТЗ на корпоративный сайт'),
+    (3, 'ТЗ на мобильное',  '2026-12-01', 'ТЗ на мобильное приложение');
+
+-- Пункты ТЗ
+INSERT INTO specification_item (id_spec, name, description) VALUES
+    (1, 'Модуль авторизации', 'Вход, регистрация, восстановление пароля'),
+    (1, 'Модуль клиентов',    'CRUD клиентов и сделок'),
+    (1, 'Отчёты',             'Генерация отчётов в PDF/Excel'),
+    (2, 'Главная страница',   'Дизайн и вёрстка главной'),
+    (2, 'Каталог услуг',      'Список услуг с фильтрами'),
+    (3, 'Авторизация',        'Вход по телефону и SMS');
+
+-- Счета
+INSERT INTO invoice (name, cost, start_date, end_date) VALUES
+    ('Счёт №1 — CRM (этап 1)', 500000.00, '2026-01-10', '2026-04-10'),
+    ('Счёт №2 — Сайт',         200000.00, '2026-02-01', '2026-07-01'),
+    ('Счёт №3 — Мобильное',    300000.00, '2026-03-01', '2026-11-01');
+
+-- Списки задач
+INSERT INTO task_list (id_invoice, name) VALUES
+    (1, 'Этап 1: Backend CRM'),
+    (1, 'Этап 1: Frontend CRM'),
+    (2, 'Вёрстка сайта'),
+    (3, 'Разработка мобильного приложения');
+
+-- Задачи (completion_percent пересчитается автоматически)
+INSERT INTO task (id_task_list, description, status, planned_hours, actual_hours, cost, id_developer) VALUES
+    (1, 'Реализовать API авторизации',   'done',        16.00, 14.00, 20000.00, 3),
+    (1, 'Реализовать CRUD клиентов',     'in_progress', 32.00, 10.00, 40000.00, 3),
+    (1, 'Реализовать генерацию отчётов', 'new',         24.00, NULL,  30000.00, 3),
+    (2, 'Вёрстка страницы логина',       'done',        8.00,  8.00,  10000.00, 4),
+    (2, 'Вёрстка страницы клиентов',     'in_progress', 16.00, 6.00,  20000.00, 4),
+    (3, 'Вёрстка главной страницы',      'done',        12.00, 11.00, 12000.00, 4),
+    (3, 'Вёрстка каталога услуг',        'new',         12.00, NULL,  12000.00, 4),
+    (4, 'Экран авторизации по SMS',      'in_progress', 20.00, 5.00,  25000.00, 5),
+    (4, 'Экран списка заказов',          'new',         30.00, NULL,  35000.00, 5);
+
+-- Изменения для подтверждения
+INSERT INTO change_request
+    (id_spec_item, id_task, id_invoice, name, description, status, id_creator, id_approver)
+VALUES
+    (1, 1, NULL,
+     'Изменить сроки авторизации',
+     'Заказчик просит увеличить planned_hours с 16 до 24 из-за SMS-подтверждения',
+     'created', 2, NULL),
+
+    (2, NULL, 1,
+     'Увеличить стоимость счёта №1',
+     'Дополнительные работы по модулю клиентов на 50 000 руб.',
+     'approved', 2, 1),
+
+    (3, 3, NULL,
+     'Убрать генерацию Excel',
+     'Отказались от Excel-выгрузки, оставляем только PDF',
+     'revoked', 2, NULL),
+
+    (4, 4, NULL,
+     'Добавить экран восстановления пароля',
+     'Требуется дополнительный экран на странице логина',
+     'created', 3, NULL);
+
+-- ============================================================
+-- ПРОВЕРКА
+-- ============================================================
+SELECT id_task_list, name, completion_percent FROM task_list ORDER BY id_task_list;
+SELECT id_change, name, status, id_creator, id_approver, created_at FROM change_request ORDER BY id_change;
