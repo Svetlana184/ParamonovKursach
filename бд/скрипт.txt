@@ -418,3 +418,114 @@ VALUES
 -- ============================================================
 SELECT id_task_list, name, completion_percent FROM task_list ORDER BY id_task_list;
 SELECT id_change, name, status, id_creator, id_approver, created_at FROM change_request ORDER BY id_change;
+
+
+ALTER TABLE users
+    ALTER COLUMN role TYPE text USING role::text;
+
+-- 2. Удаляем кастомный ENUM (он больше не нужен)
+DROP TYPE user_role;
+
+
+CREATE OR REPLACE FUNCTION dev_team.fn_recalc_task_list_completion()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_task_list_id  INTEGER;
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        v_task_list_id := OLD.id_task_list;
+    ELSE
+        v_task_list_id := NEW.id_task_list;
+    END IF;
+
+    -- Явно указываем схему dev_team
+    PERFORM dev_team.fn_recalc_task_list_completion_for(v_task_list_id);
+
+    IF TG_OP = 'UPDATE' AND OLD.id_task_list <> NEW.id_task_list THEN
+        PERFORM dev_team.fn_recalc_task_list_completion_for(OLD.id_task_list);
+    END IF;
+
+    RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_task_recalc_completion ON dev_team.task;
+
+CREATE TRIGGER trg_task_recalc_completion
+AFTER INSERT OR UPDATE OF status, planned_hours, id_task_list
+    OR DELETE
+ON dev_team.task
+FOR EACH ROW
+EXECUTE FUNCTION dev_team.fn_recalc_task_list_completion();
+
+
+
+
+-- 1. Вспомогательная функция с явной схемой
+CREATE OR REPLACE FUNCTION dev_team.fn_recalc_task_list_completion_for(p_task_list_id INTEGER)
+RETURNS VOID
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_total_weight  NUMERIC(15, 2);
+    v_done_weight   NUMERIC(15, 2);
+    v_percent       NUMERIC(5, 2);
+BEGIN
+    SELECT COALESCE(SUM(COALESCE(planned_hours, 1)), 0)
+      INTO v_total_weight
+      FROM dev_team.task
+     WHERE id_task_list = p_task_list_id;
+
+    SELECT COALESCE(SUM(COALESCE(planned_hours, 1)), 0)
+      INTO v_done_weight
+      FROM dev_team.task
+     WHERE id_task_list = p_task_list_id
+       AND status = 'done';
+
+    IF v_total_weight > 0 THEN
+        v_percent := ROUND((v_done_weight / v_total_weight) * 100, 2);
+    ELSE
+        v_percent := 0;
+    END IF;
+
+    UPDATE dev_team.task_list
+       SET completion_percent = v_percent
+     WHERE id_task_list = p_task_list_id;
+END;
+$$;
+
+-- 2. Триггерная функция с явной схемой
+CREATE OR REPLACE FUNCTION dev_team.fn_recalc_task_list_completion()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_task_list_id  INTEGER;
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        v_task_list_id := OLD.id_task_list;
+    ELSE
+        v_task_list_id := NEW.id_task_list;
+    END IF;
+
+    PERFORM dev_team.fn_recalc_task_list_completion_for(v_task_list_id);
+
+    IF TG_OP = 'UPDATE' AND OLD.id_task_list <> NEW.id_task_list THEN
+        PERFORM dev_team.fn_recalc_task_list_completion_for(OLD.id_task_list);
+    END IF;
+
+    RETURN NULL;
+END;
+$$;
+
+-- 3. Пересоздать триггер, чтобы он подхватил новую версию функции
+DROP TRIGGER IF EXISTS trg_task_recalc_completion ON dev_team.task;
+
+CREATE TRIGGER trg_task_recalc_completion
+AFTER INSERT OR UPDATE OF status, planned_hours, id_task_list
+    OR DELETE
+ON dev_team.task
+FOR EACH ROW
+EXECUTE FUNCTION dev_team.fn_recalc_task_list_completion();
